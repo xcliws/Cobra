@@ -41,7 +41,7 @@ LAUNCHPAD_POOL_LAYOUT = cStruct(
     "mint_b"           / Bytes(32),
     "vault_a"          / Bytes(32),
     "vault_b"          / Bytes(32),
-    Bytes(32),     # creator
+    "creator"          / Bytes(32),
 )
 
 LAUNCHPAD_STATUS_LAYOUT = cStruct(
@@ -72,6 +72,7 @@ class LaunchpadPoolKeys:
     real_b: int
     vault_a: Pubkey
     vault_b: Pubkey
+    creator: Pubkey
 
 class RaydiumLaunchpadCore:
     def __init__(self, client):
@@ -139,6 +140,7 @@ class RaydiumLaunchpadCore:
                 vault_b      = Pubkey.from_bytes(raw.vault_b),
                 real_a       = raw.real_a,
                 real_b       = raw.real_b,
+                creator      = raw.creator,
             )
         except Exception as e:
             traceback.print_exc()
