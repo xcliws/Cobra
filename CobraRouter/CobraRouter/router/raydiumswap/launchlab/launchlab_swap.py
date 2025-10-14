@@ -23,6 +23,7 @@ from solders.instruction import Instruction, AccountMeta # type: ignore
 
 try: from launchlab_core import RaydiumLaunchpadCore;
 except: from .launchlab_core import RaydiumLaunchpadCore
+from solders.system_program import ID as SYSTEM_PROGRAM_ID
 
 RENT_EXEMPT     = 2039280
 ACCOUNT_SIZE    = 165
@@ -122,6 +123,18 @@ class RaydiumLaunchpadSwap:
                 owner=keypair.pubkey(),
             )
         )
+        
+        # PLATFORM_FEE_VAULT
+        platform_fee_vault, _ = Pubkey.find_program_address(
+            [bytes(keys.platform_id), bytes(keys.mint_b)],
+            keys.program_id
+        )
+
+        # CREATOR_FEE_VAULT
+        creator_fee_vault, _ = Pubkey.find_program_address(
+            [bytes(keys.creator), bytes(keys.mint_b)],
+            keys.program_id
+        )
 
         metas = [
             AccountMeta(keypair.pubkey(), True, False),
@@ -144,6 +157,10 @@ class RaydiumLaunchpadSwap:
 
             AccountMeta(keys.event_auth, False, False),
             AccountMeta(keys.program_id, False, False),
+            
+            AccountMeta(SYSTEM_PROGRAM_ID, False, False),
+            AccountMeta(platform_fee_vault, False, True),
+            AccountMeta(creator_fee_vault, False, True),
         ]
         data = (
             BUY_EXACT_IN_DISCRIM
@@ -249,6 +266,18 @@ class RaydiumLaunchpadSwap:
                 owner=keypair.pubkey(),
             )
         )
+        
+        # PLATFORM_FEE_VAULT
+        platform_fee_vault, _ = Pubkey.find_program_address(
+            [bytes(keys.platform_id), bytes(keys.mint_b)],
+            keys.program_id
+        )
+
+        # CREATOR_FEE_VAULT
+        creator_fee_vault, _ = Pubkey.find_program_address(
+            [bytes(keys.creator), bytes(keys.mint_b)],
+            keys.program_id
+        )
 
         metas = [
             AccountMeta(keypair.pubkey(), True, False),
@@ -271,6 +300,10 @@ class RaydiumLaunchpadSwap:
 
             AccountMeta(keys.event_auth, False, False),
             AccountMeta(keys.program_id, False, False),
+            
+            AccountMeta(SYSTEM_PROGRAM_ID, False, False),
+            AccountMeta(platform_fee_vault, False, True),
+            AccountMeta(creator_fee_vault, False, True),
         ]
         data = (
             SELL_EXACT_IN_DISCRIM
