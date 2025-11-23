@@ -214,6 +214,20 @@ class PumpSwap:
         )
         return user_acc
 
+    async def _mint_owner(self, mint: Pubkey) -> Pubkey:
+        """
+        Fetch the token program (mint owner) for a given mint.
+        """
+        try:
+            info = await self.async_client.get_account_info(mint, commitment=Confirmed)
+            if info.value is None:
+                raise RuntimeError("mint account missing")
+            return info.value.owner
+        except Exception as e:
+            traceback.print_exc()
+            logging.info(f"Failed to get token program id: {e}")
+            return TOKEN_PROGRAM_PUB
+
     async def fetch_pool_base_price(self, pool: str | Pubkey):
         """
         Fetch the base price of the pool.
@@ -227,19 +241,20 @@ class PumpSwap:
         base_price, base_balance_tokens, quote_balance_sol = await fetch_pool_base_price(pool_keys, self.async_client)
         return base_price, base_balance_tokens, quote_balance_sol
 
-    async def create_ata_if_needed(self, owner: Pubkey, mint: Pubkey):
+    async def create_ata_if_needed(self, owner: Pubkey, mint: Pubkey, token_program: Pubkey = TOKEN_PROGRAM_PUB):
         """
         If there's no associated token account for (owner, mint), return an
         instruction to create it. Otherwise return None.
         """
-        ata = get_associated_token_address(owner, mint)
+        ata = get_associated_token_address(owner, mint, token_program)
         resp = await self.async_client.get_account_info(ata)
         if resp.value is None:
             # means ATA does not exist
             return create_associated_token_account(
                 payer=owner,
                 owner=owner,
-                mint=mint
+                mint=mint,
+                token_program_id=token_program
             )
         return None
 
@@ -287,6 +302,9 @@ class PumpSwap:
         if token_base == WSOL_MINT:
             raise Exceptions.PoolReversed("PumpSwap | Pool is reversed, which means you buy WSOL and sell TOKEN")
 
+        base_token_program = await self._mint_owner(token_base)
+        quote_token_program = await self._mint_owner(token_quote)
+
         if pool_type == NEW_POOL_TYPE:
             coin_creator  = pool_data["coin_creator"]
             vault_ata, vault_auth = derive_creator_vault(coin_creator, token_quote)
@@ -308,11 +326,11 @@ class PumpSwap:
             instructions.append(set_compute_unit_limit(UNIT_COMPUTE_BUDGET))
             instructions.append(set_compute_unit_price(micro_lamports))
 
-        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote)
+        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote, quote_token_program)
         if wsol_ata_ix:
             instructions.append(wsol_ata_ix)
 
-        wsol_ata = get_associated_token_address(user_pubkey, token_quote)
+        wsol_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program)
         system_transfer_ix = self._build_system_transfer_ix(
             from_pubkey=user_pubkey,
             to_pubkey=wsol_ata,
@@ -320,7 +338,7 @@ class PumpSwap:
         )
         instructions.append(system_transfer_ix)
 
-        base_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base)
+        base_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base, base_token_program)
         if base_ata_ix:
             instructions.append(base_ata_ix)
 
@@ -333,16 +351,18 @@ class PumpSwap:
                 global_config = GLOBAL_CONFIG_PUB,
                 base_mint    = token_base,
                 quote_mint   = token_quote,
-                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base),
-                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote),
+                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base, base_token_program),
+                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program),
                 pool_base_token_account  = Pubkey.from_string(pool_data['pool_base_token_account']),
                 pool_quote_token_account = Pubkey.from_string(pool_data['pool_quote_token_account']),
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 base_amount_out = base_amount_out,
                 max_quote_amount_in = max_quote_amount_in,
                 vault_auth = vault_auth,
                 vault_ata = vault_ata,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         elif pool_type == OLD_POOL_TYPE:
             buy_ix = self._build_old_pumpswap_buy_ix(
@@ -351,14 +371,16 @@ class PumpSwap:
                 global_config = GLOBAL_CONFIG_PUB,
                 base_mint    = token_base,
                 quote_mint   = token_quote,
-                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base),
-                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote),
+                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base, base_token_program),
+                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program),
                 pool_base_token_account  = Pubkey.from_string(pool_data['pool_base_token_account']),
                 pool_quote_token_account = Pubkey.from_string(pool_data['pool_quote_token_account']),
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 base_amount_out = base_amount_out,
-                max_quote_amount_in = max_quote_amount_in
+                max_quote_amount_in = max_quote_amount_in,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         instructions.append(buy_ix)
 
@@ -485,11 +507,14 @@ class PumpSwap:
             instructions.append(set_compute_unit_limit(UNIT_COMPUTE_BUDGET))
             instructions.append(set_compute_unit_price(micro_lamports))
 
-        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base)
+        base_token_program = await self._mint_owner(token_base)
+        quote_token_program = await self._mint_owner(token_quote)
+
+        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base, base_token_program)
         if wsol_ata_ix:
             instructions.append(wsol_ata_ix)
 
-        wsol_ata = get_associated_token_address(user_pubkey, token_base)
+        wsol_ata = get_associated_token_address(user_pubkey, token_base, base_token_program)
 
         if pool_type == NEW_POOL_TYPE:
             buy_ix = self._build_new_pumpswap_buy_ix(
@@ -498,16 +523,18 @@ class PumpSwap:
                 global_config = GLOBAL_CONFIG_PUB,
                 base_mint    = token_base,
                 quote_mint   = token_quote,
-                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base),
-                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote),
+                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base, base_token_program),
+                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program),
                 pool_base_token_account  = Pubkey.from_string(pool_data['pool_base_token_account']),
                 pool_quote_token_account = Pubkey.from_string(pool_data['pool_quote_token_account']),
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 base_amount_out = base_amount_out,
                 max_quote_amount_in = quote_token_in_amount,
                 vault_auth = vault_auth,
                 vault_ata = vault_ata,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         elif pool_type == OLD_POOL_TYPE:
             buy_ix = self._build_old_pumpswap_buy_ix(
@@ -516,14 +543,16 @@ class PumpSwap:
                 global_config = GLOBAL_CONFIG_PUB,
                 base_mint    = token_base,
                 quote_mint   = token_quote,
-                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base),
-                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote),
+                user_base_token_ata  = get_associated_token_address(user_pubkey, token_base, base_token_program),
+                user_quote_token_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program),
                 pool_base_token_account  = Pubkey.from_string(pool_data['pool_base_token_account']),
                 pool_quote_token_account = Pubkey.from_string(pool_data['pool_quote_token_account']),
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 base_amount_out = base_amount_out,
-                max_quote_amount_in = quote_token_in_amount
+                max_quote_amount_in = quote_token_in_amount,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         instructions.append(buy_ix)
 
@@ -575,7 +604,9 @@ class PumpSwap:
         protocol_fee_recipient: Pubkey,
         protocol_fee_recipient_ata: Pubkey,
         base_amount_out: int,
-        max_quote_amount_in: int
+        max_quote_amount_in: int,
+        base_token_program: Pubkey = TOKEN_PROGRAM_PUB,
+        quote_token_program: Pubkey = TOKEN_PROGRAM_PUB
     ):
         """
           #1 Pool
@@ -620,8 +651,8 @@ class PumpSwap:
             AccountMeta(pubkey=SPubkey.from_string(str(pool_quote_token_account)),is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient)),   is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient_ata)), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(base_token_program)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(quote_token_program)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(SYSTEM_PROGRAM_ID)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(ASSOCIATED_TOKEN)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(EVENT_AUTHORITY)), is_signer=False, is_writable=False),
@@ -651,7 +682,9 @@ class PumpSwap:
         base_amount_out: int,
         max_quote_amount_in: int,
         vault_auth: Pubkey,
-        vault_ata: Pubkey
+        vault_ata: Pubkey,
+        base_token_program: Pubkey = TOKEN_PROGRAM_PUB,
+        quote_token_program: Pubkey = TOKEN_PROGRAM_PUB
     ):
         """
           #1 Pool
@@ -696,8 +729,8 @@ class PumpSwap:
             AccountMeta(pubkey=SPubkey.from_string(str(pool_quote_token_account)),is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient)),   is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient_ata)), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(base_token_program)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(quote_token_program)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(SYSTEM_PROGRAM_ID)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(ASSOCIATED_TOKEN)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(EVENT_AUTHORITY)), is_signer=False, is_writable=False),
@@ -788,7 +821,10 @@ class PumpSwap:
             instructions.append(set_compute_unit_limit(UNIT_COMPUTE_BUDGET))
             instructions.append(set_compute_unit_price(micro_lamports))
         
-        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote)
+        base_token_program = await self._mint_owner(token_base)
+        quote_token_program = await self._mint_owner(token_quote)
+
+        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote, quote_token_program)
         if wsol_ata_ix:
             instructions.append(wsol_ata_ix)
         
@@ -799,9 +835,11 @@ class PumpSwap:
                 base_amount_in = base_amount_in,
                 min_quote_amount_out = min_quote_amount_out,
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 vault_auth = vault_auth,
                 vault_ata = vault_ata,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         else:
             sell_ix = self._build_old_pumpswap_sell_ix(
@@ -810,11 +848,13 @@ class PumpSwap:
                 base_amount_in = base_amount_in,
                 min_quote_amount_out = min_quote_amount_out,
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         instructions.append(sell_ix)
         
-        wsol_ata = get_associated_token_address(user_pubkey, token_quote)
+        wsol_ata = get_associated_token_address(user_pubkey, token_quote, quote_token_program)
         close_ix = close_account(
             CloseAccountParams(
                 program_id = TOKEN_PROGRAM_PUB,
@@ -902,11 +942,14 @@ class PumpSwap:
             instructions.append(set_compute_unit_limit(UNIT_COMPUTE_BUDGET))
             instructions.append(set_compute_unit_price(micro_lamports))
         
-        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base)
+        base_token_program = await self._mint_owner(token_base)
+        quote_token_program = await self._mint_owner(token_quote)
+
+        wsol_ata_ix = await self.create_ata_if_needed(user_pubkey, token_base, base_token_program)
         if wsol_ata_ix:
             instructions.append(wsol_ata_ix)
 
-        wsol_ata = get_associated_token_address(user_pubkey, token_base)
+        wsol_ata = get_associated_token_address(user_pubkey, token_base, base_token_program)
         system_transfer_ix = self._build_system_transfer_ix(
             from_pubkey=user_pubkey,
             to_pubkey=wsol_ata,
@@ -914,7 +957,7 @@ class PumpSwap:
         )
         instructions.append(system_transfer_ix)
 
-        base_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote)
+        base_ata_ix = await self.create_ata_if_needed(user_pubkey, token_quote, quote_token_program)
         if base_ata_ix:
             instructions.append(base_ata_ix)
 
@@ -927,9 +970,11 @@ class PumpSwap:
                 base_amount_in = max_quote_amount_in,
                 min_quote_amount_out = base_amount_out,
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
                 vault_auth = vault_auth,
                 vault_ata = vault_ata,
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         else:
             sell_ix = self._build_old_pumpswap_sell_ix(
@@ -938,7 +983,9 @@ class PumpSwap:
                 base_amount_in = max_quote_amount_in,
                 min_quote_amount_out = base_amount_out,
                 protocol_fee_recipient   = PROTOCOL_FEE_RECIP,
-                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote),
+                protocol_fee_recipient_ata = get_associated_token_address(PROTOCOL_FEE_RECIP, token_quote, quote_token_program),
+                base_token_program = base_token_program,
+                quote_token_program = quote_token_program,
             )
         instructions.append(sell_ix)
         
@@ -984,7 +1031,9 @@ class PumpSwap:
         protocol_fee_recipient: Pubkey,
         protocol_fee_recipient_ata: Pubkey,
         vault_auth: Pubkey,
-        vault_ata: Pubkey
+        vault_ata: Pubkey,
+        base_token_program: Pubkey = TOKEN_PROGRAM_PUB,
+        quote_token_program: Pubkey = TOKEN_PROGRAM_PUB
     ):
         """
         Accounts (17 total):
@@ -1021,16 +1070,20 @@ class PumpSwap:
             AccountMeta(pubkey=SPubkey.from_string(str(GLOBAL_CONFIG_PUB)),is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["token_base"])), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["token_quote"])), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(user_pubkey, pool_data["token_base"]))),
+            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(
+                user_pubkey, pool_data["token_base"], base_token_program
+            ))),
                         is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(user_pubkey, pool_data["token_quote"]))),
+            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(
+                user_pubkey, pool_data["token_quote"], quote_token_program
+            ))),
                         is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["pool_base_token_account"])),  is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["pool_quote_token_account"])), is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient_ata)), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(base_token_program)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(quote_token_program)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(SYSTEM_PROGRAM_ID)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(ASSOCIATED_TOKEN)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(EVENT_AUTHORITY)), is_signer=False, is_writable=False),
@@ -1054,7 +1107,9 @@ class PumpSwap:
         base_amount_in: int,
         min_quote_amount_out: int,
         protocol_fee_recipient: Pubkey,
-        protocol_fee_recipient_ata: Pubkey
+        protocol_fee_recipient_ata: Pubkey,
+        base_token_program: Pubkey = TOKEN_PROGRAM_PUB,
+        quote_token_program: Pubkey = TOKEN_PROGRAM_PUB
     ):
         """
         Accounts (17 total):
@@ -1091,16 +1146,20 @@ class PumpSwap:
             AccountMeta(pubkey=SPubkey.from_string(str(GLOBAL_CONFIG_PUB)),is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["token_base"])), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["token_quote"])), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(user_pubkey, pool_data["token_base"]))),
+            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(
+                user_pubkey, pool_data["token_base"], base_token_program
+            ))),
                         is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(user_pubkey, pool_data["token_quote"]))),
+            AccountMeta(pubkey=SPubkey.from_string(str(get_associated_token_address(
+                user_pubkey, pool_data["token_quote"], quote_token_program
+            ))),
                         is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["pool_base_token_account"])),  is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(pool_data["pool_quote_token_account"])), is_signer=False, is_writable=True),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(protocol_fee_recipient_ata)), is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SPubkey.from_string(str(TOKEN_PROGRAM_PUB)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(base_token_program)), is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SPubkey.from_string(str(quote_token_program)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(SYSTEM_PROGRAM_ID)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(ASSOCIATED_TOKEN)), is_signer=False, is_writable=False),
             AccountMeta(pubkey=SPubkey.from_string(str(EVENT_AUTHORITY)), is_signer=False, is_writable=False),

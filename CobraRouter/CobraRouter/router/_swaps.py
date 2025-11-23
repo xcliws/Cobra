@@ -628,7 +628,6 @@ class CobraSwaps:
                     ixs = await self.router.pump_swap.reversed_sell(pool_data, sell_pct, keypair, pool_type, slippage_pct=slippage, debug_prints=True, return_instructions=True)
                 else:
                     ixs = await self.router.pump_swap.sell(pool_data, sell_pct, keypair, pool_type, slippage_pct=slippage, debug_prints=True, return_instructions=True)
-                print(ixs)
                 versioned_message = MessageV0.try_compile(keypair.pubkey(), ixs, [], blockhash)
             elif dex == SUPPORTED_DEXES["RaydiumAMM"]:
                 ixs = await self.router.raydiumswap_v4.execute_sell_async(mint, keypair, int(sell_pct), int(slippage), return_instructions=True)

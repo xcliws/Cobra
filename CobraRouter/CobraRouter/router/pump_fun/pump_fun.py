@@ -217,7 +217,8 @@ class PumpFun:
         token_amount: int,      # how many tokens to buy
         lamports_budget: int,    # how many lamports to spend
         vault: Pubkey,
-        keypair: Keypair
+        keypair: Keypair,
+        token_program_id: Pubkey
     ) -> Instruction:
         instruction_data = BUY_DISCRIMINATOR + BUY_INSTRUCTION_SCHEMA.build({
             "amount": token_amount,
@@ -232,18 +233,18 @@ class PumpFun:
             AccountMeta(pubkey=mint, is_signer=False, is_writable=False),         # mint
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True), # bondingCurve
             AccountMeta(
-                pubkey=get_associated_token_address(bonding_curve, mint, TOKEN_PROGRAM_ID),
+                pubkey=get_associated_token_address(bonding_curve, mint, token_program_id),
                 is_signer=False,
                 is_writable=True
             ),                                                                    # associatedBondingCurve
             AccountMeta(
-                pubkey=get_associated_token_address(buyer, mint, TOKEN_PROGRAM_ID),
+                pubkey=get_associated_token_address(buyer, mint, token_program_id),
                 is_signer=False,
                 is_writable=True
             ),                                                                    # associatedUser
             AccountMeta(pubkey=buyer, is_signer=True, is_writable=True),         # user
             AccountMeta(pubkey=Pubkey.from_string("11111111111111111111111111111111"), is_signer=False, is_writable=False), # systemProgram
-            AccountMeta(pubkey=Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), is_signer=False, is_writable=False), # tokenProgram
+            AccountMeta(pubkey=Pubkey.from_string(str(token_program_id)), is_signer=False, is_writable=False), # tokenProgram
             AccountMeta(pubkey=Pubkey.from_string(str(vault)), is_signer=False, is_writable=True), # vault
             AccountMeta(pubkey=Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"), is_signer=False, is_writable=False), # eventAuthority
             AccountMeta(pubkey=Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"), is_signer=False, is_writable=False),   # program
@@ -267,7 +268,8 @@ class PumpFun:
         token_amount: int,       # how many tokens to sell
         lamports_min_output: int, # minimum lamports you want to receive
         vault: Pubkey,
-        keypair: Keypair
+        keypair: Keypair,
+        token_program_id: Pubkey
     ) -> Instruction:
         instruction_data = SELL_DISCRIMINATOR + SELL_INSTRUCTION_SCHEMA.build({
             "amount": token_amount,
@@ -283,19 +285,19 @@ class PumpFun:
             AccountMeta(pubkey=mint, is_signer=False, is_writable=False),          # mint
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),  # bondingCurve
             AccountMeta(
-                pubkey=get_associated_token_address(bonding_curve, mint, TOKEN_PROGRAM_ID),
+                pubkey=get_associated_token_address(bonding_curve, mint, token_program_id),
                 is_signer=False,
                 is_writable=True
             ),                                                                     # associatedBondingCurve
             AccountMeta(
-                pubkey=get_associated_token_address(user, mint, TOKEN_PROGRAM_ID),
+                pubkey=get_associated_token_address(user, mint, token_program_id),
                 is_signer=False,
                 is_writable=True
             ),                                                                     # associatedUser
             AccountMeta(pubkey=user, is_signer=True, is_writable=True),           # user
             AccountMeta(pubkey=Pubkey.from_string("11111111111111111111111111111111"), is_signer=False, is_writable=False), # systemProgram
             AccountMeta(pubkey=Pubkey.from_string(str(vault)), is_signer=False, is_writable=True),  # vault
-            AccountMeta(pubkey=Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), is_signer=False, is_writable=False), # tokenProgram
+            AccountMeta(pubkey=Pubkey.from_string(str(token_program_id)), is_signer=False, is_writable=False), # tokenProgram
             AccountMeta(pubkey=Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"), is_signer=False, is_writable=False),  # eventAuthority
             AccountMeta(pubkey=Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"), is_signer=False, is_writable=False),    # program
             AccountMeta(pubkey=Pubkey.from_string(FEE_CONFIG), is_signer=False, is_writable=False), # feeConfig
@@ -308,13 +310,15 @@ class PumpFun:
             data=instruction_data
         )
 
-    async def check_ata_exists(self, owner: Pubkey, mint: Pubkey) -> bool:
+    async def check_ata_exists(self, owner: Pubkey, mint: Pubkey, token_program_id: Pubkey | None = None) -> bool:
         """
         Check if the associated token account (ATA) exists on-chain.
         """
-        ata_address = get_associated_token_address(owner, mint, TOKEN_PROGRAM_ID)
-
         try:
+            if token_program_id is None:
+                token_program_id = await self._mint_owner(mint)
+            ata_address = get_associated_token_address(owner, mint, token_program_id)
+
             response = await self.async_client.get_account_info(ata_address)
             if response.value:
                 return True
@@ -324,16 +328,18 @@ class PumpFun:
             logging.error(f"Error checking ATA existence: {e}")
             return False
 
-    async def make_check_ata(self, keypair: Keypair, instructions: list, mint_address: Pubkey):
+    async def make_check_ata(self, keypair: Keypair, instructions: list, mint_address: Pubkey, token_program_id: Pubkey | None = None):
         """
         Check if the Associated Token Account (ATA) exists.
         If it doesn't, add an instruction to create it.
         """
         owner = keypair.pubkey()
-        
-        # Check if the ATA exists
-        ata_exists = await self.check_ata_exists(owner, mint_address)
-        token_program_id = await self._mint_owner(mint_address)
+
+        if token_program_id is None:
+            token_program_id = await self._mint_owner(mint_address)
+
+        # Check if the ATA exists for the correct token program
+        ata_exists = await self.check_ata_exists(owner, mint_address, token_program_id)
         
         if not ata_exists:
             instructions.append(
@@ -374,6 +380,8 @@ class PumpFun:
         mint_address = mint_address if isinstance(mint_address, Pubkey) else Pubkey.from_string(mint_address)
         bonding_curve_pda = bonding_curve_pda if isinstance(bonding_curve_pda, Pubkey) else Pubkey.from_string(bonding_curve_pda)
 
+        token_program_id = await self._mint_owner(mint_address)
+
         has_migrated = await check_has_migrated(
             self.async_client,
             bonding_curve_pda
@@ -389,7 +397,7 @@ class PumpFun:
             )
 
         if not skip_ata_check:
-            instructions = await self.make_check_ata(keypair, instructions, mint_address)
+            instructions = await self.make_check_ata(keypair, instructions, mint_address, token_program_id)
 
         fee_recipient = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
         vault = self.get_creator_vault(creator)
@@ -401,7 +409,8 @@ class PumpFun:
             # slippage, 1.99x
             int(sol_amount * slippage),
             vault,
-            keypair
+            keypair,
+            token_program_id
         )
         instructions.append(buy_ix)
 
@@ -459,13 +468,15 @@ class PumpFun:
         )
         if has_migrated:
             return "migrated"
-        
+
         if priority_micro_lamports > 0:
             instructions.append(
                 set_compute_unit_price(
                     priority_micro_lamports
                 )
             )
+
+        token_program_id = await self._mint_owner(mint_address)
 
         fee_recipient = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
         sell_ix = await self.build_sell_instruction(
@@ -475,11 +486,11 @@ class PumpFun:
             token_amount=token_amount,
             lamports_min_output=lamports_min_output,
             vault=self.get_creator_vault(creator),
-            keypair=keypair
+            keypair=keypair,
+            token_program_id=token_program_id
         )
         instructions.append(sell_ix)
 
-        token_program_id = await self._mint_owner(mint_address)
         instructions.append(
             close_account(
                 CloseAccountParams(
