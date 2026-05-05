@@ -1,3 +1,10 @@
+> [!NOTE]
+> This project is outdated, and will soon become archived. </br>
+> Use [Mamba](https://github.com/FLOCK4H/Mamba) instead. </br>
+> Some markets will still work until their on-chain program changes.
+
+</br>
+
 <img src="https://github.com/FLOCK4H/Cobra/blob/main/docs/imgs/cobra_banner.png" />
 
 > [!IMPORTANT]
